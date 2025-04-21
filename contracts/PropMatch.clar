@@ -9,6 +9,7 @@
 (define-constant err-sold-out (err u5))
 (define-constant err-transfer-failed (err u6))
 (define-constant err-invalid-amount (err u7))
+(define-constant err-invalid-string (err u8))
 
 ;; Data structures
 (define-map properties
@@ -43,6 +44,7 @@
 (define-data-var next-property-id uint u1)
 (define-data-var next-distribution-id uint u1)
 (define-data-var platform-fee-percent uint u2) ;; 2% platform fee
+(define-data-var contract-owner principal tx-sender)
 
 ;; Read-only functions
 (define-read-only (get-property (property-id uint))
@@ -68,12 +70,25 @@
   )
 )
 
+;; Helper functions
+(define-private (is-valid-string (value (string-ascii 100)))
+  (> (len value) u0)
+)
+
 ;; Public functions
 (define-public (register-property (name (string-ascii 100)) (location (string-ascii 100)) (total-shares uint) (price-per-share uint))
   (let (
     (property-id (var-get next-property-id))
     (caller tx-sender)
+    (valid-name (is-valid-string name))
+    (valid-location (is-valid-string location))
   )
+    ;; Check that name is valid
+    (asserts! valid-name err-invalid-string)
+    
+    ;; Check that location is valid
+    (asserts! valid-location err-invalid-string)
+    
     ;; Check that total shares is greater than zero
     (asserts! (> total-shares u0) err-invalid-amount)
     
@@ -112,6 +127,9 @@
     (caller tx-sender)
     (current-shares (get shares (get-shares property-id caller)))
   )
+    ;; Check that share count is greater than zero
+    (asserts! (> share-count u0) err-invalid-amount)
+    
     ;; Check that there are enough shares available
     (asserts! (>= available-shares share-count) err-sold-out)
     
@@ -141,17 +159,21 @@
     (caller tx-sender)
     (property-owner (get owner property))
     (current-revenue (get total-revenue property))
+    (validated-amount amount)
   )
+    ;; Check that amount is greater than zero
+    (asserts! (> validated-amount u0) err-invalid-amount)
+    
     ;; Only the property owner can add revenue
     (asserts! (is-eq caller property-owner) err-unauthorized)
     
     ;; Transfer the STX from the caller to the contract
-    (try! (stx-transfer? amount caller (as-contract tx-sender)))
+    (try! (stx-transfer? validated-amount caller (as-contract tx-sender)))
     
     ;; Update the property's total revenue
     (map-set properties
       { property-id: property-id }
-      (merge property { total-revenue: (+ current-revenue amount) })
+      (merge property { total-revenue: (+ current-revenue validated-amount) })
     )
     
     ;; Create a new distribution
@@ -162,8 +184,8 @@
         { distribution-id: distribution-id }
         {
           property-id: property-id,
-          amount: amount,
-          distribution-date: block-height,
+          amount: validated-amount,
+          distribution-date: u0,
           completed: false
         }
       )
@@ -224,14 +246,16 @@
     (asserts! completed err-unauthorized)
     
     ;; Transfer the investor's share of the revenue
-    (as-contract (stx-transfer? investor-share tx-sender caller))
+    (try! (as-contract (stx-transfer? investor-share tx-sender caller)))
+    
+    (ok investor-share)
   )
 )
 
 (define-public (set-platform-fee (new-fee-percent uint))
   (begin
-    ;; Only the contract deployer can set the platform fee
-    (asserts! (is-eq tx-sender (contract-caller)) err-unauthorized)
+    ;; Only the contract owner can set the platform fee
+    (asserts! (is-eq tx-sender (var-get contract-owner)) err-unauthorized)
     
     ;; Fee cannot be more than 10%
     (asserts! (<= new-fee-percent u10) err-invalid-amount)
